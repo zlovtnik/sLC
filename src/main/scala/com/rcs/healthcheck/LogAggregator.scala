@@ -2,6 +2,13 @@ package com.rcs.healthcheck
 
 import zio._
 import zio.stream._
+import java.nio.file.{Path, Paths, Files, StandardOpenOption, StandardCopyOption}
+import java.nio.charset.StandardCharsets
+import java.io.{PrintWriter, IOException}
+import java.time.{Instant}
+import java.time.format.DateTimeFormatter
+import cats.Monoid
+import cats.Monoid
 import java.nio.file.{Path, Paths}
 import java.io.IOException
 import scala.io.Source
@@ -56,34 +63,53 @@ object LogAggregator {
     }
   }
 
-  val logPersistenceLive: ZLayer[Any, Nothing, LogPersistence] =
-    ZLayer.succeed {
-      new LogPersistence {
-        override def persist(logs: Chunk[LogEntry]): Task[Unit] = {
-          for {
-            date     <- ZIO.clockWith(_.currentDateTime.map(_.toLocalDate.toString))
-            dir       = Paths.get("persisted-logs")
-            _        <- ZIO.attempt(Files.createDirectories(dir)).ignore
-            logFile   = dir.resolve(s"persisted-logs-$date.log")
-            _        <- ZIO.scoped {
-                          ZIO.fromAutoCloseable {
-                            ZIO.attempt(
-                              new PrintWriter(
-                                Files.newBufferedWriter(
-                                  logFile,
-                                  StandardCharsets.UTF_8,
-                                  StandardOpenOption.CREATE,
-                                  StandardOpenOption.APPEND
+  // Helper function to rotate log file if it exceeds the size threshold
+  private def rotateIfNeeded(logFile: Path, maxSize: Long): Task[Unit] = {
+    ZIO.attempt {
+      if (Files.exists(logFile) && Files.size(logFile) > maxSize) {
+        val timestamp = java.time.Instant.now().toString.replace(":", "-").replace(".", "-")
+        val archiveFile = logFile.resolveSibling(s"${logFile.getFileName}.archive.$timestamp")
+        Files.move(logFile, archiveFile, StandardCopyOption.ATOMIC_MOVE)
+        ZIO.logInfo(s"Rotated log file to $archiveFile")
+      } else {
+        ZIO.unit
+      }
+    }.flatten
+  }
+
+  val logPersistenceLive: ZLayer[AppConfig, Nothing, LogPersistence] =
+    ZLayer.fromZIO {
+      ZIO.service[AppConfig].map { config =>
+        new LogPersistence {
+          override def persist(logs: Chunk[LogEntry]): Task[Unit] = {
+            for {
+              date     <- ZIO.clockWith(_.currentDateTime.map(_.toLocalDate.toString))
+              dir       = Paths.get("persisted-logs")
+              _        <- ZIO.attempt(Files.createDirectories(dir)).ignore
+              logFile   = dir.resolve(s"persisted-logs-$date.log")
+              _        <- rotateIfNeeded(logFile, config.logAggregation.maxLogFileSize)
+              _        <- ZIO.scoped {
+                            ZIO.fromAutoCloseable {
+                              ZIO.attempt(
+                                new PrintWriter(
+                                  Files.newBufferedWriter(
+                                    logFile,
+                                    StandardCharsets.UTF_8,
+                                    StandardOpenOption.CREATE,
+                                    StandardOpenOption.APPEND
+                                  )
                                 )
                               )
-                            )
-                          }.flatMap { writer =>
-                            ZIO.foreachDiscard(logs) { log =>
-                              ZIO.attempt(writer.println(s"${log.timestamp} [${log.level}] ${log.source}: ${log.message}"))
+                            }.flatMap { writer =>
+                              ZIO.attempt {
+                                logs.foreach { log =>
+                                  writer.println(s"${log.timestamp} ${log.level} ${log.message}")
+                                }
+                              }
                             }
                           }
-                        }.catchAll(e => ZIO.logWarning(s"Failed to persist logs to file '${logFile.toString}': ${e.getMessage}"))
-          } yield ()
+            } yield ()
+          }
         }
       }
     }
