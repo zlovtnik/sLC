@@ -2,16 +2,14 @@ package com.rcs.healthcheck
 
 import zio._
 import zio.stream._
-import java.nio.file.{Path, Paths}
-import java.io.IOException
+import java.io.{IOException, PrintWriter}
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Path, Paths, StandardCopyOption, StandardOpenOption}
+import java.time.Instant
+import java.time.format.DateTimeFormatter
 import scala.io.Source
 import cats.Monoid
 import cats.implicits._
-import java.io.{FileWriter, PrintWriter}
-import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, StandardOpenOption}
-import java.time.Instant
-import java.time.format.DateTimeFormatter
 
 case class LogEntry(source: String, timestamp: Long, level: String, message: String)
 
@@ -56,35 +54,57 @@ object LogAggregator {
     }
   }
 
-  val logPersistenceLive: ZLayer[Any, Nothing, LogPersistence] =
-    ZLayer.succeed {
-      new LogPersistence {
-        override def persist(logs: Chunk[LogEntry]): Task[Unit] = {
-          for {
-            date     <- ZIO.clockWith(_.currentDateTime.map(_.toLocalDate.toString))
-            dir       = Paths.get("persisted-logs")
-            _        <- ZIO.attempt(Files.createDirectories(dir)).ignore
-            logFile   = dir.resolve(s"persisted-logs-$date.log")
-            _        <- ZIO.scoped {
-                          ZIO.fromAutoCloseable {
-                            ZIO.attempt(
-                              new PrintWriter(
-                                Files.newBufferedWriter(
-                                  logFile,
-                                  StandardCharsets.UTF_8,
-                                  StandardOpenOption.CREATE,
-                                  StandardOpenOption.APPEND
-                                )
-                              )
-                            )
-                          }.flatMap { writer =>
-                            ZIO.foreachDiscard(logs) { log =>
-                              ZIO.attempt(writer.println(s"${log.timestamp} [${log.level}] ${log.source}: ${log.message}"))
-                            }
-                          }
-                        }.catchAll(e => ZIO.logWarning(s"Failed to persist logs to file '${logFile.toString}': ${e.getMessage}"))
-          } yield ()
-        }
+  // Helper function to rotate log file if it meets or exceeds the size threshold
+  private def rotateIfNeeded(logFile: Path, maxSize: Long): Task[Unit] =
+    ZIO.whenZIO {
+      ZIO.attemptBlockingIO(Files.exists(logFile)).zipWithPar(
+        ZIO.attemptBlockingIO(if (Files.exists(logFile)) Files.size(logFile) else 0L)
+      )((exists, size) => exists && size >= maxSize)
+    } {
+      for {
+        ts <- ZIO.clockWith(_.currentDateTime.map(_.format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"))))
+        archive = logFile.resolveSibling(s"${logFile.getFileName.toString}.archive.$ts")
+        _  <- ZIO.attemptBlockingIO(Files.move(logFile, archive, StandardCopyOption.ATOMIC_MOVE))
+        _  <- ZIO.logInfo(s"Rotated log file to $archive")
+      } yield ()
+    }.unit
+
+  val logPersistenceLive: ZLayer[AppConfig, Nothing, LogPersistence] =
+    ZLayer.fromZIO {
+      for {
+        config <- ZIO.service[AppConfig]
+        sem    <- zio.Semaphore.make(1)
+      } yield new LogPersistence {
+        override def persist(logs: Chunk[LogEntry]): Task[Unit] =
+          sem.withPermit {
+            for {
+              date    <- ZIO.clockWith(_.currentDateTime.map(_.toLocalDate.toString))
+              dir      = Paths.get(config.logAggregation.persistDir)
+              _       <- ZIO.attemptBlockingIO(Files.createDirectories(dir)).ignore
+              logFile  = dir.resolve(s"persisted-logs-$date.log")
+              _       <- rotateIfNeeded(logFile, config.logAggregation.maxLogFileSize)
+              _       <- ZIO.scoped {
+                           ZIO.fromAutoCloseable {
+                             ZIO.attempt(
+                               new PrintWriter(
+                                 Files.newBufferedWriter(
+                                   logFile,
+                                   StandardCharsets.UTF_8,
+                                   StandardOpenOption.CREATE,
+                                   StandardOpenOption.APPEND
+                                 )
+                               )
+                             )
+                           }.flatMap { writer =>
+                             ZIO.attempt {
+                               logs.foreach { log =>
+                                 writer.println(s"${log.timestamp} ${log.level} ${log.source} ${log.message}")
+                               }
+                             }
+                           }
+                         }
+            } yield ()
+          }.catchAll(e => ZIO.logWarning(s"Failed to persist logs: ${e.getMessage}"))
       }
     }
   def live: ZLayer[Any, Nothing, LogAggregator] =

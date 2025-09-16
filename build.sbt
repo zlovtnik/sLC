@@ -46,3 +46,5 @@ libraryDependencies ++= Seq(
   "com.typesafe.akka" %% "akka-http-testkit" % "10.5.2" % Test,
   "com.typesafe.akka" %% "akka-testkit" % "2.8.5" % Test
 )
+
+addCommandAlias("lint", "lintUnused")

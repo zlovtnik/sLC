@@ -23,7 +23,9 @@ case class HealthCheckConfig(
 
 case class LogAggregationConfig(
   sources: List[String],
-  maxEntries: Int
+  maxEntries: Int,
+  maxLogFileSize: Long,
+  persistDir: String
 )
 
 case class ServerConfig(
@@ -67,7 +69,12 @@ object Config {
       ),
       logAggregation = LogAggregationConfig(
         sources = logAggregationConfig.getStringList("sources").asScala.toList,
-        maxEntries = logAggregationConfig.getInt("max-entries")
+        maxEntries = logAggregationConfig.getInt("max-entries"),
+        maxLogFileSize = logAggregationConfig.getBytes("max-log-file-size"),
+        persistDir = if (logAggregationConfig.hasPath("persist-dir"))
+          logAggregationConfig.getString("persist-dir")
+        else
+          "persisted-logs"
       ),
       server = ServerConfig(
         host = serverConfig.getString("host"),
@@ -83,6 +90,8 @@ object Config {
     require(appConfig.healthCheck.endpoints.nonEmpty, "Health check endpoints list cannot be empty")
     require(appConfig.logAggregation.sources.nonEmpty, "Log aggregation sources list cannot be empty")
     require(appConfig.logAggregation.maxEntries >= 0, s"Log aggregation maxEntries must be >= 0, got ${appConfig.logAggregation.maxEntries}")
+    require(appConfig.logAggregation.maxLogFileSize > 0, s"Log aggregation maxLogFileSize must be > 0, got ${appConfig.logAggregation.maxLogFileSize}")
+    require(appConfig.logAggregation.maxLogFileSize >= 4096, s"Log aggregation maxLogFileSize must be at least 4 KiB, got ${appConfig.logAggregation.maxLogFileSize}")
     require(appConfig.server.port >= 0 && appConfig.server.port <= 65535, s"Server port must be between 0 and 65535, got ${appConfig.server.port}")
 
     appConfig
