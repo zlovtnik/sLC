@@ -22,6 +22,7 @@ libraryDependencies ++= Seq(
 
   // Logging
   "ch.qos.logback" % "logback-classic" % "1.4.11",
+  "org.fusesource.jansi" % "jansi" % "2.4.0",
   "com.typesafe.scala-logging" %% "scala-logging" % "3.9.5",
 
   // Configuration
@@ -30,6 +31,7 @@ libraryDependencies ++= Seq(
   // ZIO
   "dev.zio" %% "zio" % "2.0.21",
   "dev.zio" %% "zio-logging" % "2.1.16",
+  "dev.zio" %% "zio-logging-slf4j" % "2.1.16",
   "dev.zio" %% "zio-config" % "4.0.0-RC16",
   "dev.zio" %% "zio-config-magnolia" % "4.0.0-RC16",
   "dev.zio" %% "zio-config-typesafe" % "4.0.0-RC16",

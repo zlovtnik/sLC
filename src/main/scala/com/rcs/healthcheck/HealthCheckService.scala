@@ -20,11 +20,13 @@ trait HealthCheckService {
 
 object HealthCheckService {
   def live: ZLayer[SttpBackend[Task, Any] with AppConfig, Nothing, HealthCheckService] =
-    ZLayer.fromFunction { (backend: SttpBackend[Task, Any], config: AppConfig) =>
-      new HealthCheckService {
-        private val connectivityUrl = config.healthCheck.connectivityUrl.getOrElse(
-          throw new IllegalStateException("Missing healthCheck.connectivityUrl configuration")
-        )
+    ZLayer.fromZIO {
+      for {
+        backend <- ZIO.service[SttpBackend[Task, Any]]
+        config <- ZIO.service[AppConfig]
+        connectivityUrl <- ZIO.fromOption(config.healthCheck.connectivityUrl)
+          .orElseFail(new IllegalStateException("Missing healthCheck.connectivityUrl configuration"))
+      } yield new HealthCheckService {
         private val timeoutDuration = zio.Duration.fromNanos(config.healthCheck.timeout.toNanos)
 
         override def runCheck(check: HealthCheck): ZIO[Any, Nothing, CheckResult] = check match {
@@ -64,7 +66,7 @@ object HealthCheckService {
             .map(_.combineAll)
         }
       }
-    }
+    }.orDie
 
   def runCheck(check: HealthCheck): ZIO[HealthCheckService, Nothing, CheckResult] =
     ZIO.serviceWithZIO(_.runCheck(check))
