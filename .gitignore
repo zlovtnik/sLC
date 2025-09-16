@@ -1,0 +1,48 @@
+# SBT
+target/
+lib_managed/
+src_managed/
+project/project
+project/target
+.cache
+.history
+.lib/
+
+# Scala
+*.class
+*.log
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.bloop/
+.metals/
+project/metals.sbt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+
+# Build artifacts
+dist/
+build/
+
+# Environment variables
+.env
+.env.local
+
+# Application specific
+application.log
+health-check-app.log
