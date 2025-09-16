@@ -1,4 +1,4 @@
-package com.example.healthcheck
+package com.rcs.healthcheck
 
 import zio._
 import com.typesafe.config.{ConfigFactory, Config => TSConfig}
@@ -17,7 +17,8 @@ case class AppConfig(
 case class HealthCheckConfig(
   endpoints: List[String],
   interval: scala.concurrent.duration.Duration,
-  timeout: scala.concurrent.duration.Duration
+  timeout: scala.concurrent.duration.Duration,
+  connectivityUrl: Option[String]
 )
 
 case class LogAggregationConfig(
@@ -50,7 +51,8 @@ object Config {
       healthCheck = HealthCheckConfig(
         endpoints = healthCheckConfig.getStringList("endpoints").asScala.toList,
         interval = scala.concurrent.duration.Duration(healthCheckConfig.getString("interval")),
-        timeout = scala.concurrent.duration.Duration(healthCheckConfig.getString("timeout"))
+        timeout = scala.concurrent.duration.Duration(healthCheckConfig.getString("timeout")),
+        connectivityUrl = if (healthCheckConfig.hasPath("connectivity-url")) Some(healthCheckConfig.getString("connectivity-url")) else None
       ),
       logAggregation = LogAggregationConfig(
         sources = logAggregationConfig.getStringList("sources").asScala.toList,
