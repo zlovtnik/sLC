@@ -7,13 +7,11 @@ import java.io.IOException
 import scala.io.Source
 import cats.Monoid
 import cats.implicits._
-import cats.effect.{IO, Resource}
-import zio.interop.catz._
 import java.io.{FileWriter, PrintWriter}
 
 case class LogEntry(source: String, timestamp: Long, level: String, message: String)
 
-case class LogStats(errorCount: Int, warningCount: Int)
+final case class LogStats(errorCount: Int, warningCount: Int)
 
 trait LogPersistence {
   def persist(logs: Chunk[LogEntry]): Task[Unit]
@@ -37,23 +35,19 @@ object LogAggregator {
     ZLayer.succeed {
       new LogPersistence {
         override def persist(logs: Chunk[LogEntry]): Task[Unit] = {
-          val persistEffect = for {
-            timestamp <- ZIO.clock.flatMap(_.currentDateTime.map(_.toLocalDate.toString))
-            logFile = s"persisted-logs-$timestamp.log"
-            _ <- ZIO.attempt {
-              val writer = new PrintWriter(new FileWriter(logFile, true))
-              try {
-                logs.foreach { log =>
-                  writer.println(s"${log.timestamp} [${log.level}] ${log.source}: ${log.message}")
-                }
-              } finally {
-                writer.close()
-              }
-            }.catchAll { error =>
-              ZIO.logWarning(s"Failed to persist logs to file: ${error.getMessage}")
-            }
+          for {
+            date     <- ZIO.clockWith(_.currentDateTime.map(_.toLocalDate.toString))
+            logFile   = s"persisted-logs-$date.log"
+            _        <- ZIO.scoped {
+                          ZIO.fromAutoCloseable(
+                            ZIO.attempt(new PrintWriter(new FileWriter(logFile, true)))
+                          ).flatMap { writer =>
+                            ZIO.foreachDiscard(logs) { log =>
+                              ZIO.attempt(writer.println(s"${log.timestamp} [${log.level}] ${log.source}: ${log.message}"))
+                            }
+                          }
+                        }.catchAll(e => ZIO.logWarning(s"Failed to persist logs to file '$logFile': ${e.getMessage}"))
           } yield ()
-          persistEffect
         }
       }
     }
@@ -92,13 +86,18 @@ object LogAggregator {
         }
 
         override def aggregateStats(sources: List[String]): ZIO[Any, Throwable, LogStats] = {
-          streamLogs(sources).map { entry =>
-            entry.level.toUpperCase match {
-              case "ERROR" => LogStats(1, 0)
-              case "WARN" | "WARNING" => LogStats(0, 1)
-              case _ => Monoid[LogStats].empty
+          streamLogs(sources)
+            .mapChunks { chunk =>
+              val acc = chunk.foldLeft(Monoid[LogStats].empty) { (s, entry) =>
+                entry.level.toUpperCase match {
+                  case "ERROR"               => s.copy(errorCount = s.errorCount + 1)
+                  case "WARN" | "WARNING"    => s.copy(warningCount = s.warningCount + 1)
+                  case _                     => s
+                }
+              }
+              Chunk.single(acc)
             }
-          }.runFold(Monoid[LogStats].empty)(_ |+| _)
+            .runFold(Monoid[LogStats].empty)(_ |+| _)
         }
 
         private def streamLogsFromSource(source: String): ZStream[Any, Throwable, LogEntry] = {

@@ -16,8 +16,8 @@ case class AppConfig(
 
 case class HealthCheckConfig(
   endpoints: List[String],
-  interval: scala.concurrent.duration.Duration,
-  timeout: scala.concurrent.duration.Duration,
+  interval: scala.concurrent.duration.FiniteDuration,
+  timeout: scala.concurrent.duration.FiniteDuration,
   connectivityUrl: Option[String]
 )
 
@@ -50,9 +50,19 @@ object Config {
       version = config.getString("app.version"),
       healthCheck = HealthCheckConfig(
         endpoints = healthCheckConfig.getStringList("endpoints").asScala.toList,
-        interval = scala.concurrent.duration.Duration(healthCheckConfig.getString("interval")),
-        timeout = scala.concurrent.duration.Duration(healthCheckConfig.getString("timeout")),
-        connectivityUrl = if (healthCheckConfig.hasPath("connectivity-url")) Some(healthCheckConfig.getString("connectivity-url")) else None
+        interval = {
+          val duration = healthCheckConfig.getDuration("interval")
+          require(duration.toMillis > 0, "Health check interval must be positive")
+          scala.concurrent.duration.FiniteDuration(duration.toMillis, scala.concurrent.duration.MILLISECONDS)
+        },
+        timeout = {
+          val duration = healthCheckConfig.getDuration("timeout")
+          require(duration.toMillis > 0, "Health check timeout must be positive")
+          scala.concurrent.duration.FiniteDuration(duration.toMillis, scala.concurrent.duration.MILLISECONDS)
+        },
+        connectivityUrl = Option.when(healthCheckConfig.hasPath("connectivity-url"))(
+          healthCheckConfig.getString("connectivity-url")
+        )
       ),
       logAggregation = LogAggregationConfig(
         sources = logAggregationConfig.getStringList("sources").asScala.toList,

@@ -9,11 +9,12 @@ object Main extends ZIOAppDefault {
 
   private def logHealthCheckResult(result: CheckResult, prefix: String = ""): ZIO[Any, Nothing, Unit] = result match {
     case Validated.Valid(()) => ZIO.logInfo(s"All ${prefix}health checks passed!")
-    case Validated.Invalid(errors) => ZIO.logWarning(s"${prefix.capitalize}health check failures: ${errors.toList.mkString(", ")}")
+    case Validated.Invalid(errors) => ZIO.logWarning(s"${prefix.capitalize}health check failures: ${errors.toList.map(_.message).mkString(", ")}")
   }
 
+  val configLayer: ZLayer[Any, Throwable, AppConfig] = com.rcs.healthcheck.Config.live
   val appLayer: ZLayer[Any, Throwable, HealthCheckService with LogAggregator with LogPersistence with AppConfig] =
-    HttpClientZioBackend.layer() ++ com.rcs.healthcheck.Config.live >>> HealthCheckService.live ++ LogAggregator.live ++ LogAggregator.logPersistenceLive ++ com.rcs.healthcheck.Config.live
+    HttpClientZioBackend.layer() ++ configLayer >>> HealthCheckService.live ++ LogAggregator.live ++ LogAggregator.logPersistenceLive ++ configLayer
 
   val program: ZIO[HealthCheckService with LogAggregator with LogPersistence with AppConfig, Throwable, Unit] = for {
     config <- ZIO.service[AppConfig]
@@ -30,17 +31,19 @@ object Main extends ZIOAppDefault {
     stats <- LogAggregator.aggregateStats(config.logAggregation.sources)
     _ <- ZIO.logInfo(s"Log stats: ${stats.errorCount} errors, ${stats.warningCount} warnings")
     processingPipeline = LogAggregator.streamLogs(config.logAggregation.sources)
-      .groupedWithin(1000, 1.second)
-      .mapZIOPar(8)(chunk => ZIO.serviceWithZIO[LogPersistence](_.persist(chunk)))
+      .groupedWithin(1000, zio.Duration.fromSeconds(1))
+      .mapZIO(chunk => ZIO.serviceWithZIO[LogPersistence](_.persist(chunk)))
     _ <- processingPipeline.runDrain
 
     // Schedule periodic checks
     _ <- ZIO.logInfo(s"Setting up periodic health checks every ${config.healthCheck.interval}...")
-    _ <- (for {
-      _ <- ZIO.logInfo("Running periodic health check...")
-      periodicResult <- HealthCheckService.checkAllHealths(checks)
-      _ <- logHealthCheckResult(periodicResult, "periodic ")
-    } yield ()).repeat(Schedule.spaced(java.time.Duration.ofMillis(config.healthCheck.interval.toMillis))).fork
+    fiber <- ZIO.scoped {
+      (for {
+        _ <- ZIO.logInfo("Running periodic health check...")
+        periodicResult <- HealthCheckService.checkAllHealths(checks)
+        _ <- logHealthCheckResult(periodicResult, "periodic ")
+      } yield ()).repeat(Schedule.spaced(java.time.Duration.ofMillis(config.healthCheck.interval.toMillis))).forkScoped
+    }
 
     _ <- ZIO.logInfo("Application started successfully. Press Ctrl+C to stop.")
     _ <- ZIO.never
