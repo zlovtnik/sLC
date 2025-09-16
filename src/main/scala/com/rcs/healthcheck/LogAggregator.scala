@@ -8,10 +8,14 @@ import scala.io.Source
 import cats.Monoid
 import cats.implicits._
 import java.io.{FileWriter, PrintWriter}
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, StandardOpenOption}
+import java.time.Instant
+import java.time.format.DateTimeFormatter
 
 case class LogEntry(source: String, timestamp: Long, level: String, message: String)
 
-final case class LogStats(errorCount: Int, warningCount: Int)
+final case class LogStats(errorCount: Long, warningCount: Long)
 
 trait LogPersistence {
   def persist(logs: Chunk[LogEntry]): Task[Unit]
@@ -26,9 +30,30 @@ trait LogAggregator {
 object LogAggregator {
   // Define how to combine two LogStats instances
   implicit val statsMonoid: Monoid[LogStats] = new Monoid[LogStats] {
-    def empty: LogStats = LogStats(0, 0)
+    def empty: LogStats = LogStats(0L, 0L)
     def combine(x: LogStats, y: LogStats): LogStats =
       LogStats(x.errorCount + y.errorCount, x.warningCount + y.warningCount)
+  }
+
+  // Helper function to parse timestamp from log line
+  private def parseTimestamp(timestampStr: String): Long = {
+    try {
+      // Try parsing as ISO instant first
+      Instant.parse(timestampStr).toEpochMilli
+    } catch {
+      case _: Exception =>
+        try {
+          // Try parsing with common log format: yyyy-MM-dd HH:mm:ss.SSS
+          val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
+          java.time.LocalDateTime.parse(timestampStr, formatter)
+            .toInstant(java.time.ZoneOffset.UTC)
+            .toEpochMilli
+        } catch {
+          case _: Exception =>
+            // Fallback to current time
+            java.lang.System.currentTimeMillis()
+        }
+    }
   }
 
   val logPersistenceLive: ZLayer[Any, Nothing, LogPersistence] =
@@ -37,16 +62,27 @@ object LogAggregator {
         override def persist(logs: Chunk[LogEntry]): Task[Unit] = {
           for {
             date     <- ZIO.clockWith(_.currentDateTime.map(_.toLocalDate.toString))
-            logFile   = s"persisted-logs-$date.log"
+            dir       = Paths.get("persisted-logs")
+            _        <- ZIO.attempt(Files.createDirectories(dir)).ignore
+            logFile   = dir.resolve(s"persisted-logs-$date.log")
             _        <- ZIO.scoped {
-                          ZIO.fromAutoCloseable(
-                            ZIO.attempt(new PrintWriter(new FileWriter(logFile, true)))
-                          ).flatMap { writer =>
+                          ZIO.fromAutoCloseable {
+                            ZIO.attempt(
+                              new PrintWriter(
+                                Files.newBufferedWriter(
+                                  logFile,
+                                  StandardCharsets.UTF_8,
+                                  StandardOpenOption.CREATE,
+                                  StandardOpenOption.APPEND
+                                )
+                              )
+                            )
+                          }.flatMap { writer =>
                             ZIO.foreachDiscard(logs) { log =>
                               ZIO.attempt(writer.println(s"${log.timestamp} [${log.level}] ${log.source}: ${log.message}"))
                             }
                           }
-                        }.catchAll(e => ZIO.logWarning(s"Failed to persist logs to file '$logFile': ${e.getMessage}"))
+                        }.catchAll(e => ZIO.logWarning(s"Failed to persist logs to file '${logFile.toString}': ${e.getMessage}"))
           } yield ()
         }
       }
@@ -67,11 +103,12 @@ object LogAggregator {
             val path = Paths.get(source)
             val sourceFile = Source.fromFile(path.toFile)
             try {
-              sourceFile.getLines().zipWithIndex.map { case (line, index) =>
+              sourceFile.getLines().map { line =>
                 // Simple log parsing - in real app, use proper log parsing
                 val parts = line.split(" ", 4)
                 if (parts.length >= 4) {
-                  LogEntry(source, java.lang.System.currentTimeMillis(), parts(1), parts.drop(3).mkString(" "))
+                  val timestamp = parseTimestamp(parts(0))
+                  LogEntry(source, timestamp, parts(1), parts.drop(3).mkString(" "))
                 } else {
                   LogEntry(source, java.lang.System.currentTimeMillis(), "INFO", line)
                 }
@@ -101,7 +138,20 @@ object LogAggregator {
         }
 
         private def streamLogsFromSource(source: String): ZStream[Any, Throwable, LogEntry] = {
-          ZStream.fromZIO(collectLogsFromSource(source)).flatMap(entries => ZStream.fromIterable(entries))
+          val path = Paths.get(source)
+          ZStream
+            .fromFile(path.toFile)
+            .via(ZPipeline.utf8Decode)
+            .via(ZPipeline.splitLines)
+            .map { line =>
+              val parts = line.split(" ", 4)
+              if (parts.length >= 4) {
+                val timestamp = parseTimestamp(parts(0))
+                LogEntry(source, timestamp, parts(1), parts.drop(3).mkString(" "))
+              } else
+                LogEntry(source, java.lang.System.currentTimeMillis(), "INFO", line)
+            }
+            .catchAll(e => ZStream.succeed(LogEntry(source, java.lang.System.currentTimeMillis(), "ERROR", s"Failed to stream log file: ${e.getMessage}")))
         }
       }
     }
