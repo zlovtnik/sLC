@@ -46,7 +46,9 @@ libraryDependencies ++= Seq(
   // Test dependencies
   "org.scalatest" %% "scalatest" % "3.2.17" % Test,
   "com.typesafe.akka" %% "akka-http-testkit" % "10.5.2" % Test,
-  "com.typesafe.akka" %% "akka-testkit" % "2.8.5" % Test
+  "com.typesafe.akka" %% "akka-testkit" % "2.8.5" % Test,
+  "dev.zio" %% "zio-test" % "2.0.21" % Test,
+  "dev.zio" %% "zio-test-sbt" % "2.0.21" % Test
 )
 
 addCommandAlias("lint", "lintUnused")
