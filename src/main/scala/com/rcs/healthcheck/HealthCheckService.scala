@@ -19,13 +19,13 @@ trait HealthCheckService {
 }
 
 object HealthCheckService {
-  def live: ZLayer[SttpBackend[Task, Any] with AppConfig, Nothing, HealthCheckService] =
+  def live: ZLayer[SttpBackend[Task, Any] with AppConfig, Throwable, HealthCheckService] =
     ZLayer.fromZIO {
-      for {
+      (for {
         backend <- ZIO.service[SttpBackend[Task, Any]]
         config <- ZIO.service[AppConfig]
         connectivityUrl <- ZIO.fromOption(config.healthCheck.connectivityUrl)
-          .orElseFail(new IllegalStateException("Missing healthCheck.connectivityUrl configuration"))
+          .orElseFail(new RuntimeException("Missing healthCheck.connectivityUrl in application configuration. Please set this in your application.conf or environment variables."))
       } yield new HealthCheckService {
         private val timeoutDuration = zio.Duration.fromNanos(config.healthCheck.timeout.toNanos)
 
@@ -65,8 +65,12 @@ object HealthCheckService {
           ZIO.foreachPar(checks)(runCheck)
             .map(_.combineAll)
         }
+      }).tapError { error =>
+        ZIO.succeed(
+          println(s"Failed to provision HealthCheckService: ${error.getMessage}")
+        )
       }
-    }.orDie
+    }
 
   def runCheck(check: HealthCheck): ZIO[HealthCheckService, Nothing, CheckResult] =
     ZIO.serviceWithZIO(_.runCheck(check))
