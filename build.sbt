@@ -43,6 +43,10 @@ libraryDependencies ++= Seq(
   // ZIO-Cats integration
   "dev.zio" %% "zio-interop-cats" % "23.0.0.8",
 
+  // Redis client
+  "redis.clients" % "jedis" % "5.1.0",
+  "com.typesafe.akka" %% "akka-actor" % "2.8.5",
+
   // Test dependencies
   "org.scalatest" %% "scalatest" % "3.2.17" % Test,
   "com.typesafe.akka" %% "akka-http-testkit" % "10.5.3" % Test,
