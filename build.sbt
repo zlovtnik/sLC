@@ -6,7 +6,7 @@ scalaVersion := "2.13.12"
 
 libraryDependencies ++= Seq(
   // Akka HTTP for server
-  "com.typesafe.akka" %% "akka-http" % "10.5.2",
+  "com.typesafe.akka" %% "akka-http" % "10.5.3",
   "com.typesafe.akka" %% "akka-stream" % "2.8.5",
   "com.typesafe.akka" %% "akka-actor-typed" % "2.8.5",
 
@@ -21,7 +21,7 @@ libraryDependencies ++= Seq(
   "io.circe" %% "circe-parser" % "0.14.6",
 
   // Logging
-  "ch.qos.logback" % "logback-classic" % "1.4.11",
+  "ch.qos.logback" % "logback-classic" % "1.5.13",
   "org.fusesource.jansi" % "jansi" % "2.4.0",
   "com.typesafe.scala-logging" %% "scala-logging" % "3.9.5",
 
@@ -45,7 +45,7 @@ libraryDependencies ++= Seq(
 
   // Test dependencies
   "org.scalatest" %% "scalatest" % "3.2.17" % Test,
-  "com.typesafe.akka" %% "akka-http-testkit" % "10.5.2" % Test,
+  "com.typesafe.akka" %% "akka-http-testkit" % "10.5.3" % Test,
   "com.typesafe.akka" %% "akka-testkit" % "2.8.5" % Test,
   "dev.zio" %% "zio-test" % "2.0.21" % Test,
   "dev.zio" %% "zio-test-sbt" % "2.0.21" % Test
