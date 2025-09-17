@@ -10,24 +10,36 @@ import scala.io.Source
 import cats.Monoid
 import cats.implicits._
 import com.rcs.healthcheck._
+import com.rcs.healthcheck.LogAggregator._
 
 class LogAggregatorSpec extends AnyFlatSpec with Matchers {
+
+  // Helper method to parse log lines with error recovery
+  private def parseLogLine(logLine: String, source: String): LogEntry = {
+    val parts = logLine.split(" ", 4)
+    val timestamp = if (parts.length >= 2) {
+      try {
+        Instant.parse(parts(0) + "T" + parts(1)).toEpochMilli
+      } catch {
+        case _: Exception => java.lang.System.currentTimeMillis()
+      }
+    } else {
+      java.lang.System.currentTimeMillis()
+    }
+
+    if (parts.length >= 4) {
+      LogEntry(source, timestamp, parts(2), parts.drop(3).mkString(" "))
+    } else {
+      // Error recovery: fallback to currentTimeMillis for timestamps and preserve source
+      LogEntry(source, timestamp, "INFO", logLine)
+    }
+  }
 
     "LogAggregator" should "parse log entries correctly" in {
     val logLine = "2023-09-16 10:30:15.123 INFO com.example.TestClass This is a test message"
     val source = "test.log"
 
-    // Test the parsing logic directly
-    val parts = logLine.split(" ", 4)
-    parts.length should be >= 4
-
-    val timestamp = try {
-      Instant.parse(parts(0) + "T" + parts(1)).toEpochMilli
-    } catch {
-      case _: Exception => java.lang.System.currentTimeMillis()
-    }
-
-    val logEntry = LogEntry(source, timestamp, parts(2), parts.drop(3).mkString(" "))
+    val logEntry = parseLogLine(logLine, source)
 
     logEntry.source shouldBe "test.log"
     logEntry.level shouldBe "INFO"
@@ -42,44 +54,14 @@ class LogAggregatorSpec extends AnyFlatSpec with Matchers {
     )
 
     malformedLines.foreach { line =>
-      val parts = line.split(" ", 4)
-      val logEntry = if (parts.length >= 4) {
-        val timestamp = try {
-          Instant.parse(parts(0) + "T" + parts(1)).toEpochMilli
-        } catch {
-          case _: Exception => java.lang.System.currentTimeMillis()
-        }
-        LogEntry("test.log", timestamp, parts(2), parts.drop(3).mkString(" "))
-      } else {
-        LogEntry("test.log", java.lang.System.currentTimeMillis(), "INFO", line)
-      }
+      val logEntry = parseLogLine(line, "test.log")
 
+      // Verify error recovery behavior specific to malformed lines
       logEntry.source shouldBe "test.log"
-      logEntry.level shouldBe "INFO"
-    }
-  }
-
-  it should "handle malformed log lines with error recovery" in {
-    val malformedLines = List(
-      "",
-      "incomplete log line",
-      "2023-09-16 only date"
-    )
-
-    malformedLines.foreach { line =>
-      val parts = line.split(" ", 4)
-      if (parts.length >= 4) {
-        val timestamp = try {
-          Instant.parse(parts(0) + "T" + parts(1)).toEpochMilli
-        } catch {
-          case _: Exception => java.lang.System.currentTimeMillis()
-        }
-        val logEntry = LogEntry("test.log", timestamp, parts(2), parts.drop(3).mkString(" "))
-        logEntry.source shouldBe "test.log"
-      } else {
-        val logEntry = LogEntry("test.log", java.lang.System.currentTimeMillis(), "INFO", line)
-        logEntry.source shouldBe "test.log"
-      }
+      logEntry.timestamp should be > 0L  // Timestamp should be valid (either parsed or currentTimeMillis)
+      logEntry.level shouldBe "INFO"  // Should default to INFO for malformed lines
+      // For malformed lines, message should be the original line content
+      logEntry.message shouldBe line
     }
   }
 
@@ -107,10 +89,10 @@ class LogAggregatorSpec extends AnyFlatSpec with Matchers {
   it should "validate LogStats Monoid operations" in {
     val stats1 = LogStats(5, 3)
     val stats2 = LogStats(2, 1)
-    val empty = LogStats(0, 0)
+    val empty = Monoid[LogStats].empty
 
     // Test combine operation
-    val combined = LogStats(stats1.errorCount + stats2.errorCount, stats1.warningCount + stats2.warningCount)
+    val combined = stats1 |+| stats2
     combined.errorCount shouldBe 7
     combined.warningCount shouldBe 4
 
@@ -154,13 +136,6 @@ class LogAggregatorSpec extends AnyFlatSpec with Matchers {
     logEntry.timestamp shouldBe timestamp
     logEntry.level shouldBe "INFO"
     logEntry.message shouldBe "Test message"
-  }
-
-  it should "handle empty log sources list" in {
-    val emptySources: List[String] = List()
-
-    emptySources.isEmpty shouldBe true
-    emptySources.length shouldBe 0
   }
 
   it should "validate log file path handling" in {
