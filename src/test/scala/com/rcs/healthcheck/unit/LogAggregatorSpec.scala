@@ -14,32 +14,11 @@ import com.rcs.healthcheck.LogAggregator._
 
 class LogAggregatorSpec extends AnyFlatSpec with Matchers {
 
-  // Helper method to parse log lines with error recovery
-  private def parseLogLine(logLine: String, source: String): LogEntry = {
-    val parts = logLine.split(" ", 4)
-    val timestamp = if (parts.length >= 2) {
-      try {
-        Instant.parse(parts(0) + "T" + parts(1)).toEpochMilli
-      } catch {
-        case _: Exception => java.lang.System.currentTimeMillis()
-      }
-    } else {
-      java.lang.System.currentTimeMillis()
-    }
-
-    if (parts.length >= 4) {
-      LogEntry(source, timestamp, parts(2), parts.drop(3).mkString(" "))
-    } else {
-      // Error recovery: fallback to currentTimeMillis for timestamps and preserve source
-      LogEntry(source, timestamp, "INFO", logLine)
-    }
-  }
-
-    "LogAggregator" should "parse log entries correctly" in {
+  "LogAggregator" should "parse log entries correctly" in {
     val logLine = "2023-09-16 10:30:15.123 INFO com.example.TestClass This is a test message"
     val source = "test.log"
 
-    val logEntry = parseLogLine(logLine, source)
+    val logEntry = LogAggregator.parseLogLine(logLine, source)
 
     logEntry.source shouldBe "test.log"
     logEntry.level shouldBe "INFO"
@@ -53,12 +32,14 @@ class LogAggregatorSpec extends AnyFlatSpec with Matchers {
       "2023-09-16 only date"
     )
 
+    val beforeTest = java.lang.System.currentTimeMillis()
+
     malformedLines.foreach { line =>
-      val logEntry = parseLogLine(line, "test.log")
+      val logEntry = LogAggregator.parseLogLine(line, "test.log")
 
       // Verify error recovery behavior specific to malformed lines
       logEntry.source shouldBe "test.log"
-      logEntry.timestamp should be > 0L  // Timestamp should be valid (either parsed or currentTimeMillis)
+      logEntry.timestamp should be >= beforeTest  // Timestamp should be currentTimeMillis for malformed lines
       logEntry.level shouldBe "INFO"  // Should default to INFO for malformed lines
       // For malformed lines, message should be the original line content
       logEntry.message shouldBe line
@@ -103,52 +84,35 @@ class LogAggregatorSpec extends AnyFlatSpec with Matchers {
 
   it should "handle timestamp parsing edge cases" in {
     val testCases = List(
-      ("2023-09-16T10:30:15.123Z", "ISO instant format"),
-      ("2023-09-16 10:30:15.123", "Log format with space"),
-      ("invalid-timestamp", "Invalid format")
+      "2023-09-16 10:30:15.123 INFO test Valid log with timestamp",
+      "invalid-timestamp INFO test Invalid timestamp log",
+      "2023-09-16T10:30:15.123Z INFO test ISO format log"
     )
 
-    testCases.foreach { case (timestampStr, description) =>
-      val timestamp = try {
-        Instant.parse(timestampStr).toEpochMilli
-      } catch {
-        case _: Exception =>
-          try {
-            val formatter = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
-            java.time.LocalDateTime.parse(timestampStr, formatter)
-              .toInstant(java.time.ZoneOffset.UTC)
-              .toEpochMilli
-          } catch {
-            case _: Exception =>
-              java.lang.System.currentTimeMillis()
-          }
-      }
-
-      timestamp should be > 0L
+    testCases.foreach { logLine =>
+      val logEntry = LogAggregator.parseLogLine(logLine, "test.log")
+      logEntry.timestamp should be > 0L
+      logEntry.source shouldBe "test.log"
     }
   }
 
-  it should "validate LogEntry structure" in {
-    val timestamp = java.lang.System.currentTimeMillis()
-    val logEntry = LogEntry("test.log", timestamp, "INFO", "Test message")
-
-    logEntry.source shouldBe "test.log"
-    logEntry.timestamp shouldBe timestamp
-    logEntry.level shouldBe "INFO"
-    logEntry.message shouldBe "Test message"
-  }
-
-  it should "validate log file path handling" in {
-    val testPaths = List(
-      "logs/app.log",
-      "/var/log/application.log",
-      "relative/path/to/log.log"
+  it should "handle different log source path formats" in {
+    val testCases = List(
+      ("logs/app.log", "Relative path with logs directory"),
+      ("/var/log/application.log", "Absolute path"),
+      ("app.log", "Simple filename"),
+      ("complex/path/with/many/levels/logfile.log", "Deep nested path")
     )
 
-    testPaths.foreach { path =>
-      val pathObj = Paths.get(path)
-      pathObj.toString should include ("log")
-      pathObj.getFileName.toString should endWith (".log")
+    testCases.foreach { case (path, description) =>
+      // Test that LogAggregator can handle different path formats
+      // by creating a LogEntry with the path as source
+      val logEntry = LogEntry(path, java.lang.System.currentTimeMillis(), "INFO", "Test message")
+      logEntry.source shouldBe path
+
+      // Verify the path contains expected log-related elements
+      path should include ("log")
+      path should endWith (".log")
     }
   }
 }

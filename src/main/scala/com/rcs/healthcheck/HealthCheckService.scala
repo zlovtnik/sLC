@@ -6,6 +6,8 @@ import sttp.client3.circe._
 import io.circe.generic.auto._
 import cats.data.ValidatedNel
 import cats.implicits._
+import redis.clients.jedis.{Jedis}
+import scala.concurrent.duration._
 
 // Define a sealed trait for our health checks
 sealed trait HealthCheck
@@ -26,16 +28,53 @@ object HealthCheckService {
         config <- ZIO.service[AppConfig]
         connectivityUrl <- ZIO.fromOption(config.healthCheck.connectivityUrl)
           .orElseFail(new RuntimeException("Missing healthCheck.connectivityUrl in application configuration. Please set this in your application.conf or environment variables."))
+        redisClient <- ZIO.attempt {
+          // Store Redis configuration for creating connections per health check
+          config.redis
+        }
       } yield new HealthCheckService {
         private val timeoutDuration = zio.Duration.fromNanos(config.healthCheck.timeout.toNanos)
 
         override def runCheck(check: HealthCheck): ZIO[Any, Nothing, CheckResult] = check match {
           case DatabaseCheck =>
-            // TODO: Implement real DB connectivity/health check
-            // Perform a real DB ping/query or use existing DB client to verify connection
-            // Translate failures into HealthError.DatabaseError
-            // For now, this is a stub that always returns success
-            ZIO.succeed(().validNel[HealthError]) // Represents success
+            // Redis connectivity health check using Jedis
+            ZIO.attemptBlocking {
+              // Create a fresh Jedis connection for each health check
+              val jedis = redisClient.password match {
+                case Some(pwd) =>
+                  val client = new Jedis(redisClient.host, redisClient.port)
+                  client.auth("default", pwd)
+                  client
+                case None =>
+                  new Jedis(redisClient.host, redisClient.port)
+              }
+
+              try {
+                val pong = jedis.ping()
+                pong == "PONG"
+              } finally {
+                jedis.close()
+              }
+            }.foldZIO(
+              error => {
+                val errorMsg = error match {
+                  case _: java.net.UnknownHostException =>
+                    s"Redis host '${redisClient.host}' not found. Please check your Redis configuration."
+                  case _: java.net.ConnectException =>
+                    s"Cannot connect to Redis at ${redisClient.host}:${redisClient.port}. Is Redis server running?"
+                  case _: redis.clients.jedis.exceptions.JedisConnectionException =>
+                    s"Redis connection failed: ${error.getMessage}"
+                  case _: redis.clients.jedis.exceptions.JedisDataException if error.getMessage.contains("NOAUTH") =>
+                    "Redis authentication failed. Please check your Redis password."
+                  case _ =>
+                    s"Redis health check failed: ${error.getMessage}"
+                }
+                ZIO.succeed(DatabaseError(errorMsg).invalidNel[Unit])
+              },
+              success => if (success) ZIO.succeed(().validNel[HealthError])
+                         else ZIO.succeed(DatabaseError("Redis ping failed - no PONG response").invalidNel[Unit])
+            ).timeout(timeoutDuration)
+              .map(_.getOrElse(DatabaseError(s"Redis health check timed out after ${timeoutDuration.toMillis}ms").invalidNel[Unit]))
           case InternetCheck =>
             // Check internet connectivity by pinging configured URL
             val request = basicRequest.get(uri"$connectivityUrl").response(asString)
@@ -47,15 +86,15 @@ object HealthCheckService {
             )
             check.race(ZIO.succeed(ConnectivityError("Internet connectivity timed out").invalidNel[Unit]).delay(timeoutDuration))
           case EndpointCheck(endpoint) =>
+            val base    = uri"$endpoint"
             val request = basicRequest
-              .get(uri"$endpoint/health")
-              .response(asJson[Map[String, String]])
+              .get(base.addPath("health"))  // safe join, no double slashes
+              .response(asString)           // rely on status code
             val check = backend.send(request).foldZIO(
               _ => ZIO.succeed(EndpointError(s"Endpoint $endpoint is unhealthy").invalidNel[Unit]),
-              response => response.body match {
-                case Right(_) => ZIO.succeed(().validNel[HealthError])
-                case Left(err) => ZIO.succeed(EndpointError(s"Endpoint $endpoint returned error: ${err}").invalidNel[Unit])
-              }
+              response =>
+                if (response.code.isSuccess) ZIO.succeed(().validNel[HealthError])
+                else ZIO.succeed(EndpointError(s"Endpoint $endpoint returned error: ${response.code}").invalidNel[Unit])
             )
             // Race with timeout
             check.timeout(timeoutDuration).map(_.getOrElse(EndpointError(s"Endpoint $endpoint timed out").invalidNel[Unit]))

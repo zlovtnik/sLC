@@ -48,6 +48,23 @@ object Main extends ZIOAppDefault with LazyLogging {
       }
   }
 
+  private def logIndividualHealthChecks(checks: List[HealthCheck], prefix: String = ""): ZIO[HealthCheckService, Nothing, Unit] = {
+    ZIO.foreach(checks) { check =>
+      HealthCheckService.runCheck(check).map { result =>
+        val checkName = check match {
+          case DatabaseCheck => "Redis Database"
+          case InternetCheck => "Internet Connectivity"
+          case EndpointCheck(endpoint) => s"Endpoint $endpoint"
+        }
+        val status = result match {
+          case Validated.Valid(_) => "✅ PASSED"
+          case Validated.Invalid(_) => "❌ FAILED"
+        }
+        logger.info(s"${prefix}${checkName}: $status")
+      }
+    }.unit
+  }
+
   val configLayer: ZLayer[Any, Throwable, AppConfig] = com.rcs.healthcheck.Config.live
   val appLayer: ZLayer[Any, Throwable, HealthCheckService with LogAggregator with LogPersistence with AppConfig] =
     HttpClientZioBackend.layer() ++ configLayer >>> HealthCheckService.live ++ LogAggregator.live ++ LogAggregator.logPersistenceLive ++ configLayer
@@ -62,6 +79,7 @@ object Main extends ZIOAppDefault with LazyLogging {
         _ <- ZIO.succeed(logger.info("Performing initial health checks..."))
         checks = List(DatabaseCheck, InternetCheck) ++ config.healthCheck.endpoints.map(EndpointCheck)
         result <- HealthCheckService.checkAllHealths(checks)
+        _ <- logIndividualHealthChecks(checks)
         _ <- logHealthCheckResult(result)
       } yield ()
     }
@@ -91,15 +109,17 @@ object Main extends ZIOAppDefault with LazyLogging {
 
     // Schedule periodic checks with correlation
     _ <- ZIO.succeed(logger.info(s"Setting up periodic health checks every ${config.healthCheck.interval}..."))
-    fiber <- withCorrelationId("periodic-health-check") {
-      (for {
+    fiber <- (withCorrelationId("periodic-health-check") {
+      for {
         _ <- ZIO.succeed(logger.info("Running periodic health check..."))
         checks = List(DatabaseCheck, InternetCheck) ++ config.healthCheck.endpoints.map(EndpointCheck)
         periodicResult <- HealthCheckService.checkAllHealths(checks)
+        _ <- logIndividualHealthChecks(checks, "[PERIODIC] ")
         _ <- logHealthCheckResult(periodicResult, "periodic ")
-      } yield ())
-        .repeat(Schedule.spaced(java.time.Duration.ofMillis(config.healthCheck.interval.toMillis)))
-    }.fork
+      } yield ()
+    })
+      .repeat(Schedule.spaced(java.time.Duration.ofMillis(config.healthCheck.interval.toMillis)))
+      .fork
 
     _ <- ZIO.succeed(logger.info("Application started successfully. Press Ctrl+C to stop."))
     _ <- ZIO.never
