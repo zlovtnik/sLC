@@ -114,8 +114,9 @@ object HealthCheckService {
         }
 
         override def checkAllHealths(checks: List[HealthCheck]): ZIO[Any, Nothing, CheckResult] = {
-          ZIO.foreach(checks)(runCheck)
-            .map(_.combineAll)
+          ZIO.withParallelism(config.healthCheck.parallelism) {
+            ZIO.foreachPar(checks)(runCheck)
+          }.map(_.combineAll)
         }
       }).tapError { error =>
         ZIO.succeed(logger.error("Failed to provision HealthCheckService", error))
