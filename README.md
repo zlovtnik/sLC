@@ -97,16 +97,18 @@ Resource Safety: Use ZIO.acquireReleaseWith (Scope) to ensure resources like dat
 Our health checks for the database and internet connectivity should be fast, concurrent, and provide detailed feedback.
 
 Parallel Execution
-Don't run checks sequentially. Execute all health checks in parallel and gather the results. ZIO.foreachPar is perfect for this.
+Don't run checks sequentially. Execute all health checks and gather the results.
 
 ```scala
-// Health checks run in parallel with configurable parallelism
-ZIO.foreachPar(checks)(runCheck)
-  .withParallelism(config.healthCheck.parallelism)
+// Health checks run with parallelism configured via application.conf
+// The parallelism value is set in HealthCheckConfig but currently runs sequentially
+ZIO.foreach(checks)(runCheck)
   .map(_.combineAll)
 ```
 
 ### Configurable Parallelism
+
+The `parallelism` setting in `application.conf` is available for future parallel execution but currently health checks run sequentially.
 
 The parallelism level for health checks is configurable via `application.conf`:
 
