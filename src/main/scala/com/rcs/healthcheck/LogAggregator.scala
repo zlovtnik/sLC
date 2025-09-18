@@ -54,6 +54,33 @@ object LogAggregator {
     }
   }
 
+  // Helper function to parse a single log line
+  def parseLogLine(line: String, source: String): LogEntry = {
+    val parts = line.split(" ", 4)
+    if (parts.length >= 4) {
+      val timestampStr = s"${parts(0)} ${parts(1)}"
+      val timestamp = parseTimestamp(timestampStr)
+      val level = parts(2)
+      val message = parts(3)
+      LogEntry(source, timestamp, level, message)
+    } else if (parts.length == 3) {
+      // Handle 3-part lines like "2023-09-16 INFO message"
+      // But only if the middle part is a valid log level
+      val validLevels = Set("DEBUG", "INFO", "WARN", "WARNING", "ERROR")
+      if (validLevels.contains(parts(1).toUpperCase)) {
+        val timestamp = parseTimestamp(parts(0))
+        val level = parts(1).toUpperCase
+        val message = parts(2)
+        LogEntry(source, timestamp, level, message)
+      } else {
+        // Not a valid log level, treat as malformed
+        LogEntry(source, java.lang.System.currentTimeMillis(), "INFO", line)
+      }
+    } else {
+      LogEntry(source, java.lang.System.currentTimeMillis(), "INFO", line)
+    }
+  }
+
   // Helper function to rotate log file if it meets or exceeds the size threshold
   private def rotateIfNeeded(logFile: Path, maxSize: Long): Task[Unit] =
     ZIO.whenZIO {
@@ -124,14 +151,7 @@ object LogAggregator {
             val sourceFile = Source.fromFile(path.toFile)
             try {
               sourceFile.getLines().map { line =>
-                // Simple log parsing - in real app, use proper log parsing
-                val parts = line.split(" ", 4)
-                if (parts.length >= 4) {
-                  val timestamp = parseTimestamp(parts(0))
-                  LogEntry(source, timestamp, parts(1), parts.drop(3).mkString(" "))
-                } else {
-                  LogEntry(source, java.lang.System.currentTimeMillis(), "INFO", line)
-                }
+                LogAggregator.parseLogLine(line, source)
               }.toList
             } finally {
               sourceFile.close()
@@ -164,12 +184,7 @@ object LogAggregator {
             .via(ZPipeline.utf8Decode)
             .via(ZPipeline.splitLines)
             .map { line =>
-              val parts = line.split(" ", 4)
-              if (parts.length >= 4) {
-                val timestamp = parseTimestamp(parts(0))
-                LogEntry(source, timestamp, parts(1), parts.drop(3).mkString(" "))
-              } else
-                LogEntry(source, java.lang.System.currentTimeMillis(), "INFO", line)
+              LogAggregator.parseLogLine(line, source)
             }
             .catchAll(e => ZStream.succeed(LogEntry(source, java.lang.System.currentTimeMillis(), "ERROR", s"Failed to stream log file: ${e.getMessage}")))
         }

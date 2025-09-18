@@ -11,7 +11,8 @@ case class AppConfig(
   healthCheck: HealthCheckConfig,
   logAggregation: LogAggregationConfig,
   server: ServerConfig,
-  logging: LoggingConfig
+  logging: LoggingConfig,
+  redis: RedisConfig
 )
 
 case class HealthCheckConfig(
@@ -38,6 +39,14 @@ case class LoggingConfig(
   file: String
 )
 
+case class RedisConfig(
+  host: String,
+  port: Int,
+  password: Option[String],
+  database: Int,
+  timeout: scala.concurrent.duration.FiniteDuration
+)
+
 object Config {
   def load(): ZIO[Any, Throwable, AppConfig] = ZIO.attempt {
     val config = ConfigFactory.load()
@@ -46,6 +55,7 @@ object Config {
     val logAggregationConfig = config.getConfig("app.log-aggregation")
     val serverConfig = config.getConfig("app.server")
     val loggingConfig = config.getConfig("app.logging")
+    val redisConfig = config.getConfig("app.redis")
 
     val appConfig = AppConfig(
       name = config.getString("app.name"),
@@ -83,6 +93,17 @@ object Config {
       logging = LoggingConfig(
         level = loggingConfig.getString("level"),
         file = loggingConfig.getString("file")
+      ),
+      redis = RedisConfig(
+        host = redisConfig.getString("host"),
+        port = redisConfig.getInt("port"),
+        password = Option.when(redisConfig.hasPath("password"))(redisConfig.getString("password")).filter(_.nonEmpty),
+        database = if (redisConfig.hasPath("database")) redisConfig.getInt("database") else 0,
+        timeout = {
+          val duration = redisConfig.getDuration("timeout")
+          require(duration.toNanos > 0, "Redis timeout must be positive")
+          scala.concurrent.duration.FiniteDuration(duration.toNanos, scala.concurrent.duration.NANOSECONDS)
+        }
       )
     )
 
