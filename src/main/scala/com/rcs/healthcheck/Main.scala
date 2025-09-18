@@ -56,7 +56,7 @@ object Main extends ZIOAppDefault with LazyLogging {
 
   private def logIndividualHealthChecks(checks: List[HealthCheck], prefix: String = ""): ZIO[HealthCheckService, Nothing, Unit] = {
     ZIO.foreach(checks) { check =>
-      HealthCheckService.runCheck(check).map { result =>
+      HealthCheckService.runHealthCheck(check).map { result =>
         val checkName = check match {
           case DatabaseCheck => "Redis Database"
           case InternetCheck => "Internet Connectivity"
@@ -66,7 +66,7 @@ object Main extends ZIOAppDefault with LazyLogging {
           case Validated.Valid(_) => "[PASSED]"
           case Validated.Invalid(_) => "[FAILED]"
         }
-        logger.info(s"${prefix}${checkName}: $status")
+        logger.info(s"$prefix$checkName: $status")
       }
     }.unit
   }
@@ -90,7 +90,7 @@ object Main extends ZIOAppDefault with LazyLogging {
     _ <- withCorrelationId("initial-health-check") {
       for {
         _ <- ZIO.succeed(logger.info("Performing initial health checks..."))
-        result <- HealthCheckService.checkAllHealths(checks)
+        result <- HealthCheckService.checkAllHealthChecks(checks)
         _ <- logIndividualHealthChecks(checks)
         _ <- logHealthCheckResult(result)
       } yield ()
@@ -120,14 +120,14 @@ object Main extends ZIOAppDefault with LazyLogging {
 
     // Schedule periodic checks with correlation
     _ <- ZIO.succeed(logger.info(s"Setting up periodic health checks every ${config.healthCheck.interval}..."))
-    fiber <- (withCorrelationId("periodic-health-check") {
+    fiber <- withCorrelationId("periodic-health-check") {
       for {
         _ <- ZIO.succeed(logger.info("Running periodic health check..."))
-        periodicResult <- HealthCheckService.checkAllHealths(checks)
+        periodicResult <- HealthCheckService.checkAllHealthChecks(checks)
         _ <- logIndividualHealthChecks(checks, "[PERIODIC] ")
         _ <- logHealthCheckResult(periodicResult, "periodic ")
       } yield ()
-    })
+    }
       .repeat(Schedule.spaced(java.time.Duration.ofMillis(config.healthCheck.interval.toMillis)))
       .fork
 

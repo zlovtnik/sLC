@@ -2,12 +2,8 @@ package com.rcs.healthcheck
 
 import zio._
 import sttp.client3._
-import sttp.client3.circe._
-import io.circe.generic.auto._
-import cats.data.ValidatedNel
 import cats.implicits._
-import redis.clients.jedis.{Jedis}
-import scala.concurrent.duration._
+import redis.clients.jedis.Jedis
 
 // Define a sealed trait for our health checks
 sealed trait HealthCheck
@@ -33,8 +29,8 @@ object HealthCheckService {
         // Store Redis configuration for creating connections per health check
         redisConf = config.redis
       } yield new HealthCheckService {
-        private val timeoutDuration = zio.Duration.fromNanos(config.healthCheck.timeout.toNanos)
-        private val parallelism = config.healthCheck.parallelism
+        private val redisTimeoutDuration = zio.Duration.fromNanos(redisConf.timeout.toNanos)
+        private val healthCheckTimeoutDuration = zio.Duration.fromNanos(config.healthCheck.timeout.toNanos)
 
         private def toMillisTimeout(duration: zio.Duration): Int = {
           math.min(duration.toMillis, Int.MaxValue.toLong).toInt
@@ -44,7 +40,7 @@ object HealthCheckService {
           case DatabaseCheck =>
             // Redis connectivity health check using Jedis
             ZIO.scoped {
-              val millis = toMillisTimeout(timeoutDuration)
+              val millis = toMillisTimeout(redisTimeoutDuration)
               val username = redisConf.username.getOrElse("default")
               for {
                 jedis <- ZIO.fromAutoCloseable(
@@ -85,8 +81,9 @@ object HealthCheckService {
               },
               success => if (success) ZIO.succeed(().validNel[HealthError])
                          else ZIO.succeed(DatabaseError("Redis ping failed - no PONG response").invalidNel[Unit])
-            ).timeout(timeoutDuration)
-              .map(_.getOrElse(DatabaseError(s"Redis health check timed out after ${timeoutDuration.toMillis}ms").invalidNel[Unit]))
+            ).timeout(healthCheckTimeoutDuration)
+              .map(_.getOrElse(DatabaseError(s"Redis health check timed out after ${healthCheckTimeoutDuration.toMillis}ms").invalidNel[Unit]))
+              .asInstanceOf[ZIO[Any, Nothing, CheckResult]]
           case InternetCheck =>
             // Check internet connectivity by pinging configured URL
             val request = basicRequest.get(uri"$connectivityUrl").response(asString)
@@ -96,8 +93,8 @@ object HealthCheckService {
                 if (resp.code.isSuccess) ZIO.succeed(().validNel[HealthError])
                 else ZIO.succeed(ConnectivityError(s"Connectivity check returned ${resp.code}").invalidNel[Unit])
             )
-            check.timeout(timeoutDuration)
-              .map(_.getOrElse(ConnectivityError(s"Internet connectivity check timed out after ${timeoutDuration.toMillis}ms").invalidNel[Unit]))
+            check.timeout(healthCheckTimeoutDuration)
+              .map(_.getOrElse(ConnectivityError(s"Internet connectivity check timed out after ${healthCheckTimeoutDuration.toMillis}ms").invalidNel[Unit]))
           case EndpointCheck(endpoint) =>
             val base    = uri"$endpoint"
             val request = basicRequest
@@ -112,12 +109,12 @@ object HealthCheckService {
                 else ZIO.succeed(EndpointError(s"Endpoint $endpoint returned error: ${response.code}").invalidNel[Unit])
             )
             // Race with timeout
-            check.timeout(timeoutDuration).map(_.getOrElse(EndpointError(s"Endpoint $endpoint timed out").invalidNel[Unit]))
+            check.timeout(healthCheckTimeoutDuration)
+              .map(_.getOrElse(EndpointError(s"Endpoint $endpoint timed out").invalidNel[Unit]))
         }
 
         override def checkAllHealths(checks: List[HealthCheck]): ZIO[Any, Nothing, CheckResult] = {
-          ZIO.foreachPar(checks)(runCheck)
-            .withParallelism(parallelism)
+          ZIO.foreach(checks)(runCheck)
             .map(_.combineAll)
         }
       }).tapError { error =>
@@ -125,9 +122,9 @@ object HealthCheckService {
       }
     }
 
-  def runCheck(check: HealthCheck): ZIO[HealthCheckService, Nothing, CheckResult] =
-    ZIO.serviceWithZIO(_.runCheck(check))
+  def runHealthCheck(check: HealthCheck): ZIO[HealthCheckService, Nothing, CheckResult] =
+    ZIO.serviceWithZIO[HealthCheckService](_.runCheck(check))
 
-  def checkAllHealths(checks: List[HealthCheck]): ZIO[HealthCheckService, Nothing, CheckResult] =
-    ZIO.serviceWithZIO(_.checkAllHealths(checks))
+  def checkAllHealthChecks(checks: List[HealthCheck]): ZIO[HealthCheckService, Nothing, CheckResult] =
+    ZIO.serviceWithZIO[HealthCheckService](_.checkAllHealths(checks))
 }
