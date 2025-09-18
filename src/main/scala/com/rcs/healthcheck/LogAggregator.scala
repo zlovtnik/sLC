@@ -58,11 +58,24 @@ object LogAggregator {
   def parseLogLine(line: String, source: String): LogEntry = {
     val parts = line.split(" ", 4)
     if (parts.length >= 4) {
-      val timestampStr = if (parts.length >= 3) s"${parts(0)} ${parts(1)}" else parts(0)
+      val timestampStr = s"${parts(0)} ${parts(1)}"
       val timestamp = parseTimestamp(timestampStr)
-      val level = if (parts.length >= 3) parts(2) else "INFO"
-      val message = if (parts.length >= 4) parts(3) else parts.drop(2).mkString(" ")
+      val level = parts(2)
+      val message = parts(3)
       LogEntry(source, timestamp, level, message)
+    } else if (parts.length == 3) {
+      // Handle 3-part lines like "2023-09-16 INFO message"
+      // But only if the middle part is a valid log level
+      val validLevels = Set("DEBUG", "INFO", "WARN", "WARNING", "ERROR")
+      if (validLevels.contains(parts(1).toUpperCase)) {
+        val timestamp = parseTimestamp(parts(0))
+        val level = parts(1).toUpperCase
+        val message = parts(2)
+        LogEntry(source, timestamp, level, message)
+      } else {
+        // Not a valid log level, treat as malformed
+        LogEntry(source, java.lang.System.currentTimeMillis(), "INFO", line)
+      }
     } else {
       LogEntry(source, java.lang.System.currentTimeMillis(), "INFO", line)
     }

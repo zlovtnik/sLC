@@ -57,8 +57,8 @@ object Main extends ZIOAppDefault with LazyLogging {
           case EndpointCheck(endpoint) => s"Endpoint $endpoint"
         }
         val status = result match {
-          case Validated.Valid(_) => "✅ PASSED"
-          case Validated.Invalid(_) => "❌ FAILED"
+          case Validated.Valid(_) => "[PASSED]"
+          case Validated.Invalid(_) => "[FAILED]"
         }
         logger.info(s"${prefix}${checkName}: $status")
       }

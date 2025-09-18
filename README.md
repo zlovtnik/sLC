@@ -2,6 +2,86 @@
 
 This guide outlines a strategy to enhance our log aggregator and health check services. The core goals are to maximize performance ("speeeedy" 🚀) and deepen our integration with the Cats library for more robust, type-safe, and composable code.
 
+## 🔧 Configuration & Environment Variables
+
+The application uses environment variables for sensitive configuration values. Set these environment variables in your deployment environment or secret store:
+
+### Redis Configuration
+
+```bash
+export REDIS_HOST="your-redis-host.com"
+export REDIS_PORT="6379"
+export REDIS_PASSWORD="your-secure-redis-password"
+export REDIS_DATABASE="0"
+export REDIS_TIMEOUT="5s"
+```
+
+### Optional Configuration
+
+- `REDIS_PASSWORD`: Only required if Redis authentication is enabled
+- `REDIS_DATABASE`: Defaults to 0 if not specified
+- `REDIS_TIMEOUT`: Connection timeout, defaults to 5 seconds
+
+### Quick Setup
+
+For easy setup, you can use the provided setup script:
+
+```bash
+# Copy the environment template
+cp .env.example .env
+
+# Edit .env with your actual values
+# Then run the setup script
+source setup-env.sh
+```
+
+Or manually export the variables:
+
+```bash
+export REDIS_HOST="your-redis-host.com"
+export REDIS_PORT="6379"
+export REDIS_PASSWORD="your-secure-redis-password"
+export REDIS_DATABASE="0"
+export REDIS_TIMEOUT="5s"
+```
+
+### Example Docker Deployment
+
+```bash
+docker run -e REDIS_HOST=redis.example.com \
+           -e REDIS_PORT=6379 \
+           -e REDIS_PASSWORD=your-secure-password \
+           your-app:latest
+```
+
+### Example Kubernetes Secret
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redis-secret
+type: Opaque
+data:
+  password: <base64-encoded-password>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-check-app
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: password
+```
+
 🎯 Core Principles
 Embrace Asynchronicity: Leverage ZIO Fibers for massive concurrency. Every I/O operation should be non-blocking.
 

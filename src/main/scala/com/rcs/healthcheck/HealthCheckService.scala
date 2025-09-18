@@ -21,6 +21,8 @@ trait HealthCheckService {
 }
 
 object HealthCheckService {
+  private val logger = org.slf4j.LoggerFactory.getLogger(classOf[HealthCheckService])
+
   def live: ZLayer[SttpBackend[Task, Any] with AppConfig, Throwable, HealthCheckService] =
     ZLayer.fromZIO {
       (for {
@@ -28,44 +30,48 @@ object HealthCheckService {
         config <- ZIO.service[AppConfig]
         connectivityUrl <- ZIO.fromOption(config.healthCheck.connectivityUrl)
           .orElseFail(new RuntimeException("Missing healthCheck.connectivityUrl in application configuration. Please set this in your application.conf or environment variables."))
-        redisClient <- ZIO.attempt {
-          // Store Redis configuration for creating connections per health check
-          config.redis
-        }
+        // Store Redis configuration for creating connections per health check
+        redisConf = config.redis
       } yield new HealthCheckService {
         private val timeoutDuration = zio.Duration.fromNanos(config.healthCheck.timeout.toNanos)
 
         override def runCheck(check: HealthCheck): ZIO[Any, Nothing, CheckResult] = check match {
           case DatabaseCheck =>
             // Redis connectivity health check using Jedis
-            ZIO.attemptBlocking {
-              // Create a fresh Jedis connection for each health check
-              val jedis = redisClient.password match {
-                case Some(pwd) =>
-                  val client = new Jedis(redisClient.host, redisClient.port)
-                  client.auth("default", pwd)
-                  client
-                case None =>
-                  new Jedis(redisClient.host, redisClient.port)
-              }
-
-              try {
-                val pong = jedis.ping()
-                pong == "PONG"
-              } finally {
-                jedis.close()
-              }
+            ZIO.scoped {
+              val millis = math.min(timeoutDuration.toMillis, Int.MaxValue.toLong).toInt
+              for {
+                jedis <- ZIO.fromAutoCloseable(
+                  ZIO.attempt(new Jedis(redisConf.host, redisConf.port, millis, millis))
+                )
+                _ <- ZIO.foreachDiscard(redisConf.password) { pwd =>
+                  ZIO.attempt {
+                    try jedis.auth("default", pwd)    // Redis >= 6 (ACL)
+                    catch {
+                      case _: redis.clients.jedis.exceptions.JedisDataException =>
+                        jedis.auth(pwd)               // Redis < 6 fallback
+                    }
+                  }
+                }
+                pong <- ZIO.attemptBlocking(jedis.ping())
+              } yield pong == "PONG"
             }.foldZIO(
               error => {
                 val errorMsg = error match {
                   case _: java.net.UnknownHostException =>
-                    s"Redis host '${redisClient.host}' not found. Please check your Redis configuration."
+                    s"Redis host '${redisConf.host}' not found. Please check your Redis configuration."
                   case _: java.net.ConnectException =>
-                    s"Cannot connect to Redis at ${redisClient.host}:${redisClient.port}. Is Redis server running?"
+                    s"Cannot connect to Redis at ${redisConf.host}:${redisConf.port}. Is Redis server running?"
                   case _: redis.clients.jedis.exceptions.JedisConnectionException =>
                     s"Redis connection failed: ${error.getMessage}"
-                  case _: redis.clients.jedis.exceptions.JedisDataException if error.getMessage.contains("NOAUTH") =>
-                    "Redis authentication failed. Please check your Redis password."
+                  case e: redis.clients.jedis.exceptions.JedisDataException
+                      if Option(e.getMessage).exists(_.contains("NOAUTH")) =>
+                    "Redis authentication required. Please configure a password."
+                  case e: redis.clients.jedis.exceptions.JedisDataException
+                      if Option(e.getMessage).exists(_.toUpperCase.contains("WRONGPASS")) =>
+                    "Redis authentication failed (wrong password)."
+                  case _: redis.clients.jedis.exceptions.JedisAccessControlException =>
+                    "Redis ACL denied the requested operation."
                   case _ =>
                     s"Redis health check failed: ${error.getMessage}"
                 }
@@ -79,17 +85,20 @@ object HealthCheckService {
             // Check internet connectivity by pinging configured URL
             val request = basicRequest.get(uri"$connectivityUrl").response(asString)
             val check = backend.send(request).foldZIO(
-              _ => ZIO.succeed(ConnectivityError("Internet is down").invalidNel[Unit]),
+              err => ZIO.succeed(ConnectivityError(s"Internet connectivity check failed: ${err.getMessage}").invalidNel[Unit]),
               resp =>
                 if (resp.code.isSuccess) ZIO.succeed(().validNel[HealthError])
                 else ZIO.succeed(ConnectivityError(s"Connectivity check returned ${resp.code}").invalidNel[Unit])
             )
-            check.race(ZIO.succeed(ConnectivityError("Internet connectivity timed out").invalidNel[Unit]).delay(timeoutDuration))
+            check.timeout(timeoutDuration)
+              .map(_.getOrElse(ConnectivityError(s"Internet connectivity check timed out after ${timeoutDuration.toMillis}ms").invalidNel[Unit]))
           case EndpointCheck(endpoint) =>
             val base    = uri"$endpoint"
             val request = basicRequest
-              .get(base.addPath("health"))  // safe join, no double slashes
-              .response(asString)           // rely on status code
+              .get(base.addPath("health"))
+              .acceptEncoding("identity")
+              .header("Accept", "text/plain, */*;q=0.1")
+              .response(asString)
             val check = backend.send(request).foldZIO(
               _ => ZIO.succeed(EndpointError(s"Endpoint $endpoint is unhealthy").invalidNel[Unit]),
               response =>
@@ -102,12 +111,11 @@ object HealthCheckService {
 
         override def checkAllHealths(checks: List[HealthCheck]): ZIO[Any, Nothing, CheckResult] = {
           ZIO.foreachPar(checks)(runCheck)
+            .withParallelism(4)
             .map(_.combineAll)
         }
       }).tapError { error =>
-        ZIO.succeed(
-          println(s"Failed to provision HealthCheckService: ${error.getMessage}")
-        )
+        ZIO.succeed(logger.error("Failed to provision HealthCheckService", error))
       }
     }
 
