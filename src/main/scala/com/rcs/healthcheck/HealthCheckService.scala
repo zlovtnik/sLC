@@ -34,19 +34,25 @@ object HealthCheckService {
         redisConf = config.redis
       } yield new HealthCheckService {
         private val timeoutDuration = zio.Duration.fromNanos(config.healthCheck.timeout.toNanos)
+        private val parallelism = config.healthCheck.parallelism
+
+        private def toMillisTimeout(duration: zio.Duration): Int = {
+          math.min(duration.toMillis, Int.MaxValue.toLong).toInt
+        }
 
         override def runCheck(check: HealthCheck): ZIO[Any, Nothing, CheckResult] = check match {
           case DatabaseCheck =>
             // Redis connectivity health check using Jedis
             ZIO.scoped {
-              val millis = math.min(timeoutDuration.toMillis, Int.MaxValue.toLong).toInt
+              val millis = toMillisTimeout(timeoutDuration)
+              val username = redisConf.username.getOrElse("default")
               for {
                 jedis <- ZIO.fromAutoCloseable(
                   ZIO.attempt(new Jedis(redisConf.host, redisConf.port, millis, millis))
                 )
                 _ <- ZIO.foreachDiscard(redisConf.password) { pwd =>
                   ZIO.attempt {
-                    try jedis.auth("default", pwd)    // Redis >= 6 (ACL)
+                    try jedis.auth(username, pwd)    // Redis >= 6 (ACL)
                     catch {
                       case _: redis.clients.jedis.exceptions.JedisDataException =>
                         jedis.auth(pwd)               // Redis < 6 fallback
@@ -111,7 +117,7 @@ object HealthCheckService {
 
         override def checkAllHealths(checks: List[HealthCheck]): ZIO[Any, Nothing, CheckResult] = {
           ZIO.foreachPar(checks)(runCheck)
-            .withParallelism(4)
+            .withParallelism(parallelism)
             .map(_.combineAll)
         }
       }).tapError { error =>

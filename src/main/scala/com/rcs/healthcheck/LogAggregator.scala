@@ -33,6 +33,9 @@ object LogAggregator {
       LogStats(x.errorCount + y.errorCount, x.warningCount + y.warningCount)
   }
 
+  // Valid log levels for parsing log entries
+  private val VALID_LOG_LEVELS = Set("DEBUG", "INFO", "WARN", "WARNING", "ERROR")
+
   // Helper function to parse timestamp from log line
   private def parseTimestamp(timestampStr: String): Long = {
     try {
@@ -66,8 +69,7 @@ object LogAggregator {
     } else if (parts.length == 3) {
       // Handle 3-part lines like "2023-09-16 INFO message"
       // But only if the middle part is a valid log level
-      val validLevels = Set("DEBUG", "INFO", "WARN", "WARNING", "ERROR")
-      if (validLevels.contains(parts(1).toUpperCase)) {
+      if (VALID_LOG_LEVELS.contains(parts(1).toUpperCase)) {
         val timestamp = parseTimestamp(parts(0))
         val level = parts(1).toUpperCase
         val message = parts(2)
@@ -146,18 +148,13 @@ object LogAggregator {
         }
 
         private def collectLogsFromSource(source: String): ZIO[Any, Throwable, List[LogEntry]] = {
-          ZIO.attempt {
-            val path = Paths.get(source)
-            val sourceFile = Source.fromFile(path.toFile)
-            try {
-              sourceFile.getLines().map { line =>
-                LogAggregator.parseLogLine(line, source)
-              }.toList
-            } finally {
-              sourceFile.close()
-            }
+          ZIO.scoped {
+            ZIO.fromAutoCloseable(ZIO.attempt(Source.fromFile(source)))
+              .flatMap { sourceFile =>
+                ZIO.attempt(sourceFile.getLines().map(parseLogLine(_, source)).toList)
+              }
           }.catchAll {
-            case e: IOException => ZIO.succeed(List(LogEntry(source, java.lang.System.currentTimeMillis(), "ERROR", s"Failed to read log file: ${e.getMessage}")))
+            case e: IOException => ZIO.succeed(List(LogEntry(source, java.lang.System.currentTimeMillis(), "ERROR", s"Failed to read: ${e.getMessage}")))
             case e => ZIO.fail(e)
           }
         }

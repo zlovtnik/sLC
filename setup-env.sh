@@ -14,7 +14,7 @@ export REDIS_TIMEOUT="${REDIS_TIMEOUT:-5s}"
 # Prompt for Redis password if not already set
 if [ -z "$REDIS_PASSWORD" ]; then
     echo "Please enter your Redis password:"
-    read -s REDIS_PASSWORD
+    read -rs REDIS_PASSWORD
     export REDIS_PASSWORD
     echo "Redis password has been set."
 else

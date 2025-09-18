@@ -19,7 +19,8 @@ case class HealthCheckConfig(
   endpoints: List[String],
   interval: scala.concurrent.duration.FiniteDuration,
   timeout: scala.concurrent.duration.FiniteDuration,
-  connectivityUrl: Option[String]
+  connectivityUrl: Option[String],
+  parallelism: Int
 )
 
 case class LogAggregationConfig(
@@ -44,7 +45,8 @@ case class RedisConfig(
   port: Int,
   password: Option[String],
   database: Int,
-  timeout: scala.concurrent.duration.FiniteDuration
+  timeout: scala.concurrent.duration.FiniteDuration,
+  username: Option[String]
 )
 
 object Config {
@@ -75,7 +77,12 @@ object Config {
         connectivityUrl =
           Option.when(healthCheckConfig.hasPath("connectivity-url"))(
             healthCheckConfig.getString("connectivity-url").trim
-          ).filter(_.nonEmpty)
+          ).filter(_.nonEmpty),
+        parallelism = {
+          val p = if (healthCheckConfig.hasPath("parallelism")) healthCheckConfig.getInt("parallelism") else 4
+          require(p >= 1 && p <= 32, s"Health check parallelism must be between 1 and 32, got $p")
+          p
+        }
       ),
       logAggregation = LogAggregationConfig(
         sources = logAggregationConfig.getStringList("sources").asScala.toList,
@@ -95,15 +102,25 @@ object Config {
         file = loggingConfig.getString("file")
       ),
       redis = RedisConfig(
-        host = redisConfig.getString("host"),
-        port = redisConfig.getInt("port"),
+        host = {
+          val h = redisConfig.getString("host")
+          require(h.nonEmpty, "Redis host cannot be empty")
+          h
+        },
+        port = {
+          val p = redisConfig.getInt("port")
+          require(p >= 1 && p <= 65535, s"Redis port must be between 1 and 65535, got $p")
+          p
+        },
         password = Option.when(redisConfig.hasPath("password"))(redisConfig.getString("password")).filter(_.nonEmpty),
         database = if (redisConfig.hasPath("database")) redisConfig.getInt("database") else 0,
         timeout = {
           val duration = redisConfig.getDuration("timeout")
           require(duration.toNanos > 0, "Redis timeout must be positive")
+          require(duration.toMillis <= 300000, "Redis timeout must be <= 5 minutes")
           scala.concurrent.duration.FiniteDuration(duration.toNanos, scala.concurrent.duration.NANOSECONDS)
-        }
+        },
+        username = Option.when(redisConfig.hasPath("username"))(redisConfig.getString("username")).filter(_.nonEmpty)
       )
     )
 

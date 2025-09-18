@@ -22,6 +22,7 @@ class ConfigSpec extends AnyFlatSpec with Matchers {
       |    interval = 30s
       |    timeout = 10s
       |    connectivity-url = "https://www.google.com"
+      |    parallelism = 4
       |  }
       |  log-aggregation {
       |    sources = ["logs/app.log"]
@@ -43,6 +44,7 @@ class ConfigSpec extends AnyFlatSpec with Matchers {
       |    password = "testpass"
       |    database = 0
       |    timeout = 5s
+      |    username = "testuser"
       |  }
       |}
     """.stripMargin
@@ -62,7 +64,8 @@ class ConfigSpec extends AnyFlatSpec with Matchers {
         endpoints = healthCheckConfig.getStringList("endpoints").asScala.toList,
         interval = FiniteDuration(healthCheckConfig.getDuration("interval").toNanos, NANOSECONDS),
         timeout = FiniteDuration(healthCheckConfig.getDuration("timeout").toNanos, NANOSECONDS),
-        connectivityUrl = Some(healthCheckConfig.getString("connectivity-url"))
+        connectivityUrl = Some(healthCheckConfig.getString("connectivity-url")),
+        parallelism = healthCheckConfig.getInt("parallelism")
       ),
       logAggregation = LogAggregationConfig(
         sources = logAggregationConfig.getStringList("sources").asScala.toList,
@@ -83,7 +86,8 @@ class ConfigSpec extends AnyFlatSpec with Matchers {
         port = redisConfig.getInt("port"),
         password = Some(redisConfig.getString("password")),
         database = redisConfig.getInt("database"),
-        timeout = FiniteDuration(redisConfig.getDuration("timeout").toNanos, NANOSECONDS)
+        timeout = FiniteDuration(redisConfig.getDuration("timeout").toNanos, NANOSECONDS),
+        username = Some(redisConfig.getString("username"))
       )
     )
 
