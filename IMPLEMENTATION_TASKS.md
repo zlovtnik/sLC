@@ -96,7 +96,7 @@ _ <- ZIO.succeed(logger.info(s"📊 Processing logs from ${config.logAggregation
 ### 1. Add Docker Support (1 hour)
 ```dockerfile
 # Create Dockerfile
-FROM openjdk:11-jre-slim
+FROM azulzulu:21-jre-slim
 COPY target/scala-2.13/health-check-log-aggregator_2.13-0.1.0.jar app.jar
 EXPOSE 9090
 CMD ["java", "-jar", "app.jar"]

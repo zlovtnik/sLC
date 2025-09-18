@@ -8,19 +8,23 @@ The application uses environment variables for sensitive configuration values. S
 
 ### Redis Configuration
 
+The application now uses sensible defaults for Redis configuration, making it ready to run out of the box for development:
+
 ```bash
-export REDIS_HOST="your-redis-host.com"
-export REDIS_PORT="6379"
-export REDIS_PASSWORD="your-secure-redis-password"
-export REDIS_DATABASE="0"
-export REDIS_TIMEOUT="5s"
+# Optional environment variables (with defaults)
+export REDIS_HOST="localhost"          # Default: localhost
+export REDIS_PORT="6379"               # Default: 6379
+export REDIS_USERNAME="your-username"  # Optional: defaults to "default" for ACL
+export REDIS_PASSWORD="your-password"  # Optional: only if authentication required
+export REDIS_DATABASE="0"              # Default: 0
+export REDIS_TIMEOUT="5s"              # Default: 5s
 ```
 
-### Optional Configuration
+### Configuration Strategy
 
-- `REDIS_PASSWORD`: Only required if Redis authentication is enabled
-- `REDIS_DATABASE`: Defaults to 0 if not specified
-- `REDIS_TIMEOUT`: Connection timeout, defaults to 5 seconds
+- **Required with Defaults**: `host`, `port`, `timeout` have sensible defaults and will use environment variables if provided
+- **Optional**: `username`, `password`, and `database` are optional and will use defaults if not specified
+- **Validation**: Application validates configuration on startup and fails fast on misconfiguration
 
 ### Quick Setup
 
@@ -30,19 +34,17 @@ For easy setup, you can use the provided setup script:
 # Copy the environment template
 cp .env.example .env
 
-# Edit .env with your actual values
+# Edit .env with your actual values (only required overrides)
 # Then run the setup script
 source setup-env.sh
 ```
 
-Or manually export the variables:
+Or manually export only the variables you need to override:
 
 ```bash
+# Only set what you need to change from defaults
 export REDIS_HOST="your-redis-host.com"
-export REDIS_PORT="6379"
 export REDIS_PASSWORD="your-secure-redis-password"
-export REDIS_DATABASE="0"
-export REDIS_TIMEOUT="5s"
 ```
 
 ### Example Docker Deployment
@@ -95,7 +97,38 @@ Resource Safety: Use ZIO.acquireReleaseWith (Scope) to ensure resources like dat
 Our health checks for the database and internet connectivity should be fast, concurrent, and provide detailed feedback.
 
 Parallel Execution
-Don't run checks sequentially. Execute all health checks in parallel and gather the results. ZIO.foreachPar is perfect for this.
+Don't run checks sequentially. Execute all health checks and gather the results.
+
+```scala
+// Health checks run with parallelism configured via application.conf
+// The parallelism value is set in HealthCheckConfig but currently runs sequentially
+ZIO.foreach(checks)(runCheck)
+  .map(_.combineAll)
+```
+
+### Configurable Parallelism
+
+The `parallelism` setting in `application.conf` is available for future parallel execution but currently health checks run sequentially.
+
+The parallelism level for health checks is configurable via `application.conf`:
+
+```hocon
+health-check {
+  parallelism = 4  # Number of concurrent health checks (1-32)
+}
+```
+
+**Parallelism Guidelines:**
+
+- **Development**: `parallelism = 2-4` (conservative, easier debugging)
+- **Production**: `parallelism = 8-16` (optimal throughput)
+- **High-Load**: `parallelism = 16-32` (maximum concurrency)
+- **Limits**: Minimum 1, maximum 32 (validated at startup)
+
+```bash
+# Environment variable override
+export HEALTH_CHECK_PARALLELISM="8"
+```
 
 ```scala
 import zio._
