@@ -40,7 +40,7 @@ import zio.DurationSyntax
     persistDir = "/tmp/persisted-logs"
   )
 
-  val testServerConfig = ServerConfig("localhost", 8080)
+  val testServerConfig = ServerConfig("0.0.0.0", 8080)
 
   val testLoggingConfig = LoggingConfig("INFO", "/tmp/app.log")
 
