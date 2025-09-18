@@ -4,10 +4,12 @@ import zio._
 import zio.stream._
 import java.io.{IOException, PrintWriter}
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path, Paths, StandardCopyOption, StandardOpenOption}
+import java.nio.file.{Files, Path, Paths, StandardCopyOption, StandardOpenOption, FileSystems, FileVisitOption}
+import java.nio.file.attribute.BasicFileAttributes
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import scala.io.Source
+import scala.jdk.CollectionConverters._
 import cats.Monoid
 import cats.implicits._
 
@@ -36,6 +38,36 @@ object LogAggregator {
   // Valid log levels for parsing log entries
   private val VALID_LOG_LEVELS = Set("DEBUG", "INFO", "WARN", "WARNING", "ERROR")
 
+  // Helper function to expand glob patterns to actual file paths
+  private def expandGlobs(pattern: String): List[String] = {
+    try {
+      val path = Paths.get(pattern)
+      if (Files.exists(path) && !Files.isDirectory(path)) {
+        // Not a glob, just a regular file
+        List(pattern)
+      } else {
+        // Try to expand as glob
+        val matcher = FileSystems.getDefault.getPathMatcher(s"glob:$pattern")
+        val parent = Option(path.getParent).getOrElse(Paths.get("."))
+
+        if (Files.exists(parent) && Files.isDirectory(parent)) {
+          Files.walk(parent, FileVisitOption.FOLLOW_LINKS)
+            .filter(p => !Files.isDirectory(p) && matcher.matches(p))
+            .map(_.toString)
+            .toArray
+            .map(_.asInstanceOf[String])
+            .toList
+        } else {
+          List.empty
+        }
+      }
+    } catch {
+      case _: Exception =>
+        // If glob expansion fails, return the original pattern
+        List(pattern)
+    }
+  }
+
   // Helper function to parse timestamp from log line
   private def parseTimestamp(timestampStr: String): Long = {
     try {
@@ -63,7 +95,8 @@ object LogAggregator {
     if (parts.length >= 4) {
       val timestampStr = s"${parts(0)} ${parts(1)}"
       val timestamp = parseTimestamp(timestampStr)
-      val level = parts(2)
+      val lvl = parts(2).toUpperCase
+      val level = if (VALID_LOG_LEVELS.contains(lvl)) lvl else "INFO"
       val message = parts(3)
       LogEntry(source, timestamp, level, message)
     } else if (parts.length == 3) {
@@ -93,7 +126,13 @@ object LogAggregator {
       for {
         ts <- ZIO.clockWith(_.currentDateTime.map(_.format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"))))
         archive = logFile.resolveSibling(s"${logFile.getFileName.toString}.archive.$ts")
-        _  <- ZIO.attemptBlockingIO(Files.move(logFile, archive, StandardCopyOption.ATOMIC_MOVE))
+        _  <- ZIO.attemptBlockingIO(
+                try Files.move(logFile, archive, StandardCopyOption.ATOMIC_MOVE)
+                catch {
+                  case _: java.nio.file.AtomicMoveNotSupportedException =>
+                    Files.move(logFile, archive, StandardCopyOption.REPLACE_EXISTING)
+                }
+              )
         _  <- ZIO.logInfo(s"Rotated log file to $archive")
       } yield ()
     }.unit
@@ -140,11 +179,13 @@ object LogAggregator {
     ZLayer.succeed {
       new LogAggregator {
         override def aggregateLogs(sources: List[String]): ZIO[Any, Throwable, List[LogEntry]] = {
-          ZIO.foreach(sources)(source => collectLogsFromSource(source)).map(_.flatten)
+          val expandedSources = sources.flatMap(expandGlobs)
+          ZIO.foreach(expandedSources)(source => collectLogsFromSource(source)).map(_.flatten)
         }
 
         override def streamLogs(sources: List[String]): ZStream[Any, Throwable, LogEntry] = {
-          ZStream.fromIterable(sources).flatMap(source => streamLogsFromSource(source))
+          val expandedSources = sources.flatMap(expandGlobs)
+          ZStream.fromIterable(expandedSources).flatMap(source => streamLogsFromSource(source))
         }
 
         private def collectLogsFromSource(source: String): ZIO[Any, Throwable, List[LogEntry]] = {
