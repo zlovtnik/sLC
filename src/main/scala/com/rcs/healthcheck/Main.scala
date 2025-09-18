@@ -63,10 +63,16 @@ object Main extends ZIOAppDefault with LazyLogging {
           case EndpointCheck(endpoint) => s"Endpoint $endpoint"
         }
         val status = result match {
-          case Validated.Valid(_) => "[PASSED]"
-          case Validated.Invalid(_) => "[FAILED]"
+          case Validated.Valid(_) => "PASSED"
+          case Validated.Invalid(_) => "FAILED"
         }
-        logger.info(s"$prefix$checkName: $status")
+        
+        // Use structured logging with MDC
+        MDC.put("checkName", checkName)
+        MDC.put("checkStatus", status)
+        if (prefix.nonEmpty) MDC.put("checkType", "periodic")
+        logger.info(s"Health check result: $checkName $status")
+        clearMdc("checkName", "checkStatus", "checkType")
       }
     }.unit
   }
@@ -85,6 +91,9 @@ object Main extends ZIOAppDefault with LazyLogging {
     checks = List(DatabaseCheck, InternetCheck) ++ config.healthCheck.endpoints.map(EndpointCheck)
     _ <- ZIO.succeed(logger.info(s"🔍 Monitoring ${checks.size} health check targets"))
     _ <- ZIO.succeed(logger.info(s"📊 Processing logs from ${config.logAggregation.sources.size} sources"))
+
+    // Initialize health status tracking
+    healthStatusRef <- Ref.make[CheckResult](Validated.valid(().asInstanceOf[Unit]))
 
     // Health checks with correlation
     _ <- withCorrelationId("initial-health-check") {
@@ -124,6 +133,7 @@ object Main extends ZIOAppDefault with LazyLogging {
       for {
         _ <- ZIO.succeed(logger.info("Running periodic health check..."))
         periodicResult <- HealthCheckService.checkAllHealthChecks(checks)
+        _ <- healthStatusRef.set(periodicResult)
         _ <- logIndividualHealthChecks(checks, "[PERIODIC] ")
         _ <- logHealthCheckResult(periodicResult, "periodic ")
       } yield ()
@@ -132,7 +142,7 @@ object Main extends ZIOAppDefault with LazyLogging {
       .fork
 
     // Start HTTP server for health check endpoint
-    _ <- ZIO.succeed(logger.info("Starting HTTP server on port 9090..."))
+    _ <- ZIO.succeed(logger.info(s"Starting HTTP server on port ${config.server.port}..."))
     actorSystem <- ZIO.attempt(ActorSystem("health-check-system"))
     requestHandler = (request: HttpRequest) => {
       if (request.uri.path.toString() == "/health" && request.method == HttpMethods.GET) {
@@ -144,9 +154,11 @@ object Main extends ZIOAppDefault with LazyLogging {
         Future.successful(HttpResponse(status = StatusCodes.NotFound))
       }
     }
-    bindingFuture <- ZIO.attempt(Http(actorSystem).newServerAt("0.0.0.0", 9090).bind(requestHandler))
-    binding <- ZIO.fromFuture(_ => bindingFuture)
-    _ <- ZIO.succeed(logger.info(s"HTTP server started at http://localhost:9090"))
+    bindingFuture <- ZIO.attempt(Http(actorSystem).newServerAt("0.0.0.0", config.server.port).bind(requestHandler))
+    binding <- ZIO.fromFuture(_ => bindingFuture).catchAll { error =>
+      ZIO.fail(new RuntimeException(s"Failed to bind HTTP server on port ${config.server.port}: ${error.getMessage}", error))
+    }
+    _ <- ZIO.succeed(logger.info(s"HTTP server started at http://localhost:${config.server.port}"))
 
     _ <- ZIO.succeed(logger.info("Application started successfully. Press Ctrl+C to stop."))
     _ <- ZIO.never
