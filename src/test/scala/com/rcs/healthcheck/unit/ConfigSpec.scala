@@ -32,7 +32,7 @@ class ConfigSpec extends AnyFlatSpec with Matchers {
       |  }
       |  server {
       |    host = "0.0.0.0"
-      |    port = 9090
+      |    port = 8080
       |  }
       |  logging {
       |    level = "INFO"
@@ -94,7 +94,7 @@ class ConfigSpec extends AnyFlatSpec with Matchers {
     appConfig.name shouldBe "Test App"
     appConfig.version shouldBe "1.0.0"
     appConfig.healthCheck.endpoints shouldBe List("http://localhost:8080")
-    appConfig.server.port shouldBe 9090
+    appConfig.server.port shouldBe 8080
   }
 
   it should "validate port range correctly" in {
@@ -124,7 +124,7 @@ class ConfigSpec extends AnyFlatSpec with Matchers {
       |  }
       |  server {
       |    host = "0.0.0.0"
-      |    port = 9090
+      |    port = 8080
       |  }
       |  logging {
       |    level = "INFO"
